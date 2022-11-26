@@ -38,6 +38,7 @@ TO DO:
 LMK changes:
 - Do not exit if fastq-dump version is out of date (e.g. Conda version is often 1 behind)
 - Handle more recent fastq-dump version output, don't exit if unable to grab version
+- Add necessary newlines when writing to .tsv, plus save as .tsv instead of .csv
 """
 
 import argparse
@@ -158,10 +159,10 @@ def main():
     loop.close()
 
     # Write output files
-    with open('accession_master_list.csv', 'w') as master_list:
+    with open('accession_master_list.tsv', 'w') as master_list:
         header = ('run_accession', 'experiment_accession', 'biosample_accession', 'library_source',
                   'seq_platform', 'file_locations')
-        master_list.write('\t'.join(header))
+        master_list.write('\t'.join(header) + "\n")
         # Write out some data associated with each accession and any error(s)
         logging.info('Attempted to download %s SRA runs', len(sra_runs))
         for sra_run in sra_runs:
@@ -173,7 +174,7 @@ def main():
                 data = (sra_run.accession, sra_run.experiment.accession, sra_run.sample.accession,
                         sra_run.experiment.library_source, sra_run.experiment.platform,
                         ' '.join(sra_run.output_fps))
-                master_list.write('\t'.join(data))
+                master_list.write('\t'.join(data) + "\n")
         logging.info('Successful downloads: %s', len(sra_runs) - error_downloads)
         logging.info('Failed downloads: %s', error_downloads)
     with open('all_warnings.log', 'w') as warning_logfile:
