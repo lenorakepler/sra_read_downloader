@@ -34,6 +34,10 @@ TO DO:
   to make sure they work for very large sets.
   Relevant functions: biosample_uids_from_bioproject_uids, biosample_uids_from_sra_run_uids,
   biosamples_from_biosample_uids, sra_experiments_from_sra_experiment_uids
+
+LMK changes:
+- Do not exit if fastq-dump version is out of date (e.g. Conda version is often 1 behind)
+- Handle more recent fastq-dump version output, don't exit if unable to grab version
 """
 
 import argparse
@@ -765,18 +769,20 @@ def check_fastq_dump_version():
         sys.exit()
     try:
         version_string = subprocess.check_output(['fastq-dump', '--version']).decode().strip()
-        version_string = version_string.split(' : ')[1]
+        if ":" in version_string:
+            version_string = version_string.split(' : ')[1]
+        else:
+            version_string = version_string.split(' ')[2]
     except (subprocess.CalledProcessError, IndexError):
-        logging.error('Could not parse "fastq-dump --version" output')
-        sys.exit()
+        logging.error(f'Could not parse "fastq-dump --version" output: {version_string}')
     current_url = 'https://ftp-trace.ncbi.nlm.nih.gov/sra/sdk/current/sratoolkit.current.version'
     with urllib.request.urlopen(current_url) as current_version_response:
         current_version = current_version_response.read().decode().strip()
     if version_string != current_version:
         logging.error('fastq-dump version (' + version_string +
                       ') is not the current version (' + current_version + ')')
-        sys.exit()
-    logging.info('fastq-dump version (' + version_string + ') is good')
+    else:
+        logging.info('fastq-dump version (' + version_string + ') is good')
 
 
 if __name__ == '__main__':
