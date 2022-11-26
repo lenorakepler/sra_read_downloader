@@ -53,12 +53,13 @@ import sys
 import urllib.request
 import shutil
 import subprocess
-import xml.etree.ElementTree as Et
+import xml.etree.ElementTree as ET
 import pandas as pd
 import time
+from Bio import Entrez
+import urllib.parse
 
 __version__ = '0.1.0'
-
 
 def get_arguments():
     parser = argparse.ArgumentParser(description='Download reads from NCBI')
@@ -98,12 +99,21 @@ def get_arguments():
     parser.add_argument('--genome_trackr_col_value', required=False, type=str,
                         help='Value in column of GenomeTrackr to use to select specific rows. '
                              'Column name can be set with --genome_trackr_col.')
+    parser.add_argument('--email', type=str,
+                        help='Email address to associate with Entrez requests')
+    parser.add_argument('--api', type=str, required=False,
+                        help='API key to associate with Entrez requests')
+
     # TO DO: ensure that input files exist if specified
     return parser.parse_args()
 
-
 def main():
     args = get_arguments()
+
+    Entrez.email = args.email
+    if args.api:
+        Entrez.api_key = args.api
+
     initialise_logging_file(args.logfile)
     check_fastq_dump_version()
     sra_runs = []
@@ -184,10 +194,8 @@ def main():
                 accessions_seen.add(sra_run.sample.accession)
                 warning_logfile.write(sra_run.sample.accession + '\t'.join(sra_run.sample.warnings) + '\n')
 
-
 class BadAccession(Exception):
     pass
-
 
 def sra_runs_from_bioproject_accessions(bioproject_accs, get_all=False):
     sra_runs = []
@@ -239,68 +247,54 @@ def uids_from_accession(accessions, database):
     """
     if not isinstance(accessions, list):
         accessions = [accessions]
-    # Format URL
-    esearch_template_url = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/' \
-                           'esearch.fcgi?db=%s&term=%s&retmax=100000'
-    esearch_url = esearch_template_url % (database, '+OR+'.join(accessions))
 
-    # Make GET request
-    with urllib.request.urlopen(esearch_url) as esearch_response:
-        esearch_xml = esearch_response.read()
-        esearch_root = Et.fromstring(esearch_xml)
-        uids = [x.text for x in esearch_root.findall('./IdList/Id')]
-        if len(accessions) != len(uids):
-            raise BadAccession
-        return uids
-
+    # term = urllib.parse.quote_plus(' OR '.join(accessions))
+    term = ' OR '.join(accessions)
+    handle = Entrez.esearch(db=database, term=term, retmax=100000)
+    esearch_xml = ET.parse(handle)
+    esearch_root = esearch_xml.getroot()
+    uids = [x.text for x in esearch_root.findall('./IdList/Id')]
+    if len(accessions) != len(uids):
+        raise BadAccession
+    handle.close()
+    return uids
 
 def biosample_uids_from_bioproject_uids(bioproject_uids):
-    elink_url = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/elink.fcgi' + \
-                '?dbfrom=bioproject&db=biosample&id=' + ','.join(bioproject_uids)
-    with urllib.request.urlopen(elink_url) as elink_response:
-        elink_xml = elink_response.read()
-        elink_root = Et.fromstring(elink_xml)
+    with Entrez.elink(dbfrom="bioproject", db="biosample", id=','.join(bioproject_uids)) as handle:
+        elink_xml = ET.parse(handle)
+        elink_root = elink_xml.getroot()
         for link_set_db in elink_root.findall('./LinkSet/LinkSetDb'):
             if link_set_db.find('./LinkName').text == 'bioproject_biosample_all':
                 return [x.text for x in link_set_db.findall('./Link/Id')]
     return []
 
-
 def biosample_uids_from_sra_run_uids(sra_run_uids):
-    elink_url = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/elink.fcgi' + \
-                '?dbfrom=sra&db=biosample&id=' + ','.join(sra_run_uids)
-    with urllib.request.urlopen(elink_url) as elink_response:
-        elink_xml = elink_response.read()
-        elink_root = Et.fromstring(elink_xml)
+    with Entrez.elink(dbfrom="sra", db="biosample", id=','.join(sra_run_uids)) as handle:
+        elink_xml = ET.parse(handle)
+        elink_root = elink_xml.getroot()
         for link_set_db in elink_root.findall('./LinkSet/LinkSetDb'):
             if link_set_db.find('./LinkName').text == 'sra_biosample':
                 return [x.text for x in link_set_db.findall('./Link/Id')]
-    return []
 
+    return []
 
 def biosamples_from_biosample_uids(biosample_uids):
     # First we build the BioSamples.
     biosamples = []
-    efetch_url = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi' + \
-                 '?dbfrom=biosample&db=biosample&id=' + ','.join(biosample_uids)
 
-    # TO DO: Using '&retmode=json' would give me JSON results, which would be a lot nicer to parse!
-
-    with urllib.request.urlopen(efetch_url) as efetch_response:
-        efetch_xml = efetch_response.read()
-        efetch_root = Et.fromstring(efetch_xml)
+    with Entrez.efetch(dbfrom="biosample", db="biosample", id=','.join(biosample_uids)) as handle:
+        efetch_xml = ET.parse(handle)
+        efetch_root = efetch_xml.getroot()
         for biosample_xml in efetch_root.findall('./BioSample'):
-            biosamples.append(BioSample(biosample_xml))
+                biosamples.append(BioSample(biosample_xml))
 
     # Then we build the SRA experiments that are linked to those biosamples.
-    elink_url = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/elink.fcgi' + \
-                '?dbfrom=biosample&db=sra&id=' + ','.join(b.uid for b in biosamples)
-    with urllib.request.urlopen(elink_url) as elink_response:
-        elink_xml = elink_response.read()
-        elink_root = Et.fromstring(elink_xml)
+    with Entrez.elink(dbfrom="biosample", db="sra", id=','.join(b.uid for b in biosamples)) as handle:
+        elink_xml = ET.parse(handle)
+        elink_root = elink_xml.getroot()
         sra_experiment_uids = [x.text for x in elink_root.findall('./LinkSet/LinkSetDb/Link/Id')]
         sra_experiments = sra_experiments_from_sra_experiment_uids(sra_experiment_uids)
-
+       
     # Now we have to associate SRA experiments with BioSamples.
     biosample_dict = {b.accession: b for b in biosamples}
     for experiment in sra_experiments:
@@ -323,16 +317,14 @@ def biosamples_from_biosample_uids(biosample_uids):
 
 
 def sra_experiments_from_sra_experiment_uids(sra_experiment_uids):
-    efetch_url = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi' + \
-                    '?dbfrom=sra&db=sra&id=' + ','.join(sra_experiment_uids)
     sra_experiments = []
-    with urllib.request.urlopen(efetch_url) as efetch_response:
-        efetch_xml = efetch_response.read()
-        efetch_root = Et.fromstring(efetch_xml)
+    with Entrez.efetch(dbfrom="sra", db="sra", id=','.join(sra_experiment_uids)) as handle:
+        efetch_xml = ET.parse(handle)
+        efetch_root = efetch_xml.getroot()
         for sra_experiment_xml in efetch_root.findall('./EXPERIMENT_PACKAGE'):
             sra_experiments.append(SraExperiment(sra_experiment_xml))
-    return sra_experiments
 
+    return sra_experiments
 
 def get_sra_run_accession_for_biosamples(biosamples):
     sra_run_accessions = []
